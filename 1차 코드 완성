@@ -1,0 +1,165 @@
+import streamlit as st
+import pandas as pd
+import feedparser
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from datetime import datetime
+import re
+from urllib.parse import quote
+
+# Matplotlib 한글 깨짐 방지 설정
+# Windows: Malgun Gothic, macOS: AppleGothic
+import platform
+if platform.system() == 'Windows':
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+elif platform.system() == 'Darwin': # macOS
+    plt.rcParams['font.family'] = 'AppleGothic'
+plt.rcParams['axes.unicode_minus'] = False
+
+class NewsAnalyzer:
+    def __init__(self):
+        # 감성 분석을 위한 간이 키워드 사전
+        self.pos_words = ['성장', '급증', '인기', '혜택', '최저가', '성공', '확대', '상승', '돌풍', '혁신']
+        self.neg_words = ['논란', '우려', '위조', '가짜', '피해', '규제', '위험', '침체', '하락', '발암', '유해']
+
+    def crawl_news(self, base_url, keyword):
+        """구글 뉴스 RSS 수집 (URL 인코딩 처리 포함)"""
+        # 검색어 내 공백 및 특수문자를 URL 안전 형식으로 변환
+        encoded_keyword = quote(keyword)
+        full_url = f"{base_url}{encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
+        
+        feed = feedparser.parse(full_url)
+        
+        news_list = []
+        for entry in feed.entries:
+            # 제목과 언론사 분리 (제목 - 언론사)
+            full_title = entry.title
+            if ' - ' in full_title:
+                title = ' - '.join(full_title.split(' - ')[:-1])
+                press = full_title.split(' - ')[-1]
+            else:
+                title = full_title
+                press = "기타"
+            
+            # 발행 날짜 처리
+            try:
+                date_parsed = datetime(*(entry.published_parsed[:6]))
+                date_str = date_parsed.strftime('%Y-%m-%d')
+            except Exception:
+                date_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # 플랫폼 분류
+            platform_type = "알리" if "알리" in title else "테무" if "테무" in title else "기타"
+            
+            news_list.append({
+                '날짜': date_str,
+                '제목': title,
+                '언론사': press,
+                '플랫폼(알리/테무)': platform_type
+            })
+            
+        return pd.DataFrame(news_list)
+
+    def analyze_sentiment(self, title):
+        """제목 키워드 기반 감성 분석"""
+        score = 0
+        for word in self.pos_words:
+            if word in title:
+                score += 1
+        for word in self.neg_words:
+            if word in title:
+                score -= 1
+        
+        if score > 0: return '긍정'
+        elif score < 0: return '부정'
+        else: return '중립'
+
+    def visualize_all(self, df):
+        """시각화 결과 출력"""
+        # 1. 시계열 선 그래프
+        st.subheader("날짜별 기사 발행량 변화")
+        df_counts = df.groupby('날짜').size().reset_index(name='기사수')
+        df_counts = df_counts.sort_values('날짜')
+        fig1, ax1 = plt.subplots(figsize=(10, 4))
+        ax1.plot(df_counts['날짜'], df_counts['기사수'], marker='o', color='#1f77b4')
+        plt.xticks(rotation=45)
+        ax1.grid(True, linestyle='--', alpha=0.6)
+        st.pyplot(fig1)
+
+        col1, col2 = st.columns(2)
+        
+        # 2. 감성 분석 막대 그래프
+        with col1:
+            st.subheader("여론 감성 비중")
+            sentiment_counts = df['감성점수'].value_counts()
+            fig2, ax2 = plt.subplots()
+            colors = {'중립': '#d3d3d3', '긍정': '#6495ed', '부정': '#ff6347'}
+            sentiment_counts.plot(kind='bar', color=[colors.get(x, '#d3d3d3') for x in sentiment_counts.index], ax=ax2)
+            plt.xticks(rotation=0)
+            st.pyplot(fig2)
+
+        # 3. 워드클라우드
+        with col2:
+            st.subheader("주요 키워드 시각화")
+            all_titles = " ".join(df['제목'])
+            # 한글/영문 제외 특수문자 제거
+            clean_text = re.sub(r'[^가-힣a-zA-Z\s]', '', all_titles)
+            
+            if clean_text.strip():
+                # font_path는 시스템 폰트 경로에 맞춰 수정이 필요할 수 있습니다
+                try:
+                    wc = WordCloud(font_path='malgun.ttf', background_color='white', width=400, height=400).generate(clean_text)
+                    fig3, ax3 = plt.subplots()
+                    ax3.imshow(wc, interpolation='bilinear')
+                    ax3.axis('off')
+                    st.pyplot(fig3)
+                except:
+                    st.write("워드클라우드용 폰트를 찾을 수 없습니다.")
+
+def main():
+    st.set_page_config(page_title="해외 직구 플랫폼 여론 분석", layout="wide")
+    st.title("해외 직구 플랫폼 국내 언론 여론 분석")
+    
+    # URL 입력 기본값 설정
+    default_rss_url = "https://news.google.com/rss/search?q="
+    keyword = st.text_input("검색 키워드 입력", "알리익스프레스 OR 테무")
+    base_url = st.text_input("구글 뉴스 RSS 베이스 URL", default_rss_url)
+    
+    analyzer = NewsAnalyzer()
+
+    if st.button("크롤링 시작"):
+        if not keyword.strip():
+            st.error("키워드를 입력해 주세요.")
+            return
+
+        try:
+            with st.spinner("데이터 수집 및 분석 중..."):
+                # 데이터 수집
+                df = analyzer.crawl_news(base_url, keyword)
+                
+                if df.empty:
+                    st.warning("수집된 데이터가 없습니다. 검색어나 URL을 확인해 주세요.")
+                    return
+
+                # 감성 분석 적용
+                df['감성점수'] = df['제목'].apply(analyzer.analyze_sentiment)
+                
+                # 데이터 저장
+                df.to_csv('crawled_data.csv', index=False, encoding='utf-8-sig')
+                
+                # 데이터프레임 출력
+                st.subheader("수집된 기사 목록")
+                st.dataframe(df, use_container_width=True)
+                
+                st.divider()
+                
+                # 시각화 실행
+                analyzer.visualize_all(df)
+                
+                st.success("모든 분석이 완료되었으며 'crawled_data.csv' 파일로 저장되었습니다.")
+                
+        except Exception as e:
+            st.error(f"프로세스 진행 중 오류 발생: {str(e)}")
+
+if __name__ == "__main__":
+    main()
