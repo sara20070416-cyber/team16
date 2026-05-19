@@ -1,0 +1,211 @@
+import streamlit as st
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from wordcloud import WordCloud
+from datetime import datetime
+import re
+from urllib.parse import quote
+import platform
+
+# Matplotlib 한글 폰트 및 축 설정
+if platform.system() == 'Windows':
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+elif platform.system() == 'Darwin':
+    plt.rcParams['font.family'] = 'AppleGothic'
+plt.rcParams['axes.unicode_minus'] = False
+
+
+class UltimateNewsAnalyzer:
+    def __init__(self):
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+    def fetch_rss_news(self, keyword):
+        """구글 RSS 데이터에서 깔끔한 제목과 언론사 정보만 추출 (요약문 수집 제거)"""
+        news_data = []
+        encoded_keyword = quote(keyword)
+        rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
+
+        try:
+            response = requests.get(rss_url, headers=self.headers, timeout=10)
+            soup = BeautifulSoup(response.content, features="xml")
+            items = soup.find_all("item")
+
+            for item in items:
+                full_title = item.title.text if item.title else ""
+                title_split = full_title.rsplit(" - ", 1)
+                clean_title = title_split[0].strip()
+                press = title_split[1].strip() if len(title_split) > 1 else "알 수 없음"
+
+                # 날짜 변환
+                pub_date = item.pubDate.text if item.pubDate else ""
+                try:
+                    date_obj = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
+                except:
+                    date_obj = datetime.now()
+
+                # 플랫폼 분류 (제목 기준)
+                combined_text = clean_title.lower()
+                is_ali = "알리" in combined_text or "ali" in combined_text
+                is_temu = "테무" in combined_text or "temu" in combined_text
+
+                if is_ali and is_temu:
+                    platform = "알리&테무"
+                elif is_ali:
+                    platform = "알리"
+                elif is_temu:
+                    platform = "테무"
+                else:
+                    platform = "기타"
+
+                news_data.append([date_obj, clean_title, press, platform])
+
+            # 데이터프레임 구조에서 '요약문' 완전 제외
+            df = pd.DataFrame(news_data, columns=['날짜', '제목', '언론사', '플랫폼'])
+            return df.sort_values('날짜', ascending=False)
+        except Exception as e:
+            st.error(f"데이터 수집 중 오류 발생: {e}")
+            return pd.DataFrame()
+
+    def analyze_sentiment(self, row):
+        """[직구 플랫폼 전용] 오직 '제목'만을 기반으로 한 정밀 여론 판정 로직"""
+        full_text = row['제목'].lower()
+        full_text = re.sub(r'\s+', ' ', full_text)
+
+        # [0단계] 양면성/모순 문맥 사전 차단
+        neutral_defense_keywords = ['굴욕', '그늘', '빛과 그림자', '명암', '양날의 검', '속사정']
+        if any(word in full_text for word in neutral_defense_keywords) or \
+                (('초저가' in full_text or '가성비' in full_text) and ('못 잡았다' in full_text or '우려' in full_text)):
+            return '중립'
+
+        # [1단계] 부정을 결정하는 키워드 (낮은 품질, 안정성 문제, 소비자 피해, 불법)
+        neg_keywords = [
+            '발암', '독성', '유해', '기준치 초과', '검출', '납', '카드뮴', '화학물질', '성분', '부적합', '불합격',
+            '품질', '불량', '하자', '위조', '짝퉁', '가짜', '속았다', '허술', '부실', '오인', '속임수',
+            '도둑질', '불법', '도용', '침체', '침해', '카피', '카피캣',
+            '차단', '금지', '적발', '퇴출', '폐기', '수거', '회수', '피해', '사기', '불만', '신고', '환불 거부', '과징금', '제재', '소송', '조사', '고발'
+        ]
+        if re.search('|'.join(neg_keywords), full_text):
+            return '부정'
+
+        # [2단계] 우회적/의문형 비판 기사 필터링
+        neg_reversion_patterns = [
+            r'(가성비|열풍|공습|격돌|진격|성장).*(보다 중요|의 그늘|숨겨진|역습|속 사정|빛과 그림자|우려|비상|\?)',
+            '이대로 괜찮나', '이탈', '발길 돌려', '감소', '줄어', '역성장', '위축', '둔화', '시들', '주춤'
+        ]
+        if re.search('|'.join(neg_reversion_patterns), full_text):
+            return '부정'
+
+        # [3단계] 긍정을 결정하는 키워드 (소비자 칭찬, 파격적인 가격 메리트, 이점 강조)
+        pos_keywords = [
+            '초저가', '반값', '가성비', '특가', '할인', '최저가', '파격', '싸다', '저렴', '합리적 가격', '가격 파괴',
+            '무료배송', '무료반품', '혜택', '이벤트', '쿠폰', '사은품', '편리', '효자', '매료', '인기', '열풍', '만족'
+        ]
+        if re.search('|'.join(pos_keywords), full_text):
+            return '긍정'
+
+        return '중립'
+
+    def visualize_all(self, df):
+        """3가지 차트 시각화 구현 및 제목 기반 워드클라우드 정제"""
+        st.subheader("날짜별 기사 발행량 변화")
+        df_counts = df.groupby(df['날짜'].dt.date).size().reset_index(name='발행건수')
+
+        fig1, ax1 = plt.subplots(figsize=(11, 3.5))
+        ax1.plot(df_counts['날짜'], df_counts['발행건수'], marker='o', color='#1a73e8', linewidth=2)
+        ax1.set_ylabel("발행 건수")
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m.%d'))
+        plt.xticks(rotation=45)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        st.pyplot(fig1)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("여론 감성 비중")
+            sentiment_counts = df['감성점수'].value_counts().reindex(['긍정', '중립', '부정']).fillna(0)
+            fig2, ax2 = plt.subplots()
+            colors = ['#34a853', '#9aa0a6', '#ea4335']
+            sentiment_counts.plot(kind='bar', color=colors, ax=ax2)
+            ax2.set_ylabel("기사 수")
+            plt.xticks(rotation=0)
+            st.pyplot(fig2)
+
+        with col2:
+            st.subheader("핵심 키워드 워드클라우드")
+
+            # 💡 [개선 포인트] 요약문을 빼고 오직 기사 '제목' 데이터만 엮어서 워드클라우드 생성
+            text = " ".join(df['제목']).lower()
+
+            # 불필요한 기호 및 문자 청소
+            text = re.sub(r'[^가-힣\s]', '', text)
+
+            # 불용어 사전
+            stopwords = [
+                '알리', '테무', '직구', '해외', '플랫폼', '이커머스', '중국', '중국산', '쇼핑', '앱', '국내',
+                '기자', '뉴스', '언론', '보도', '종합', '에', '의', '가', '이', '은', '는', '을', '를', '과', '와', '으로', '로', '등', '한',
+                '적', '및',
+                '관련', '대해', '위해', '때문', '통해', '이번', '올해', '지난', '최근', '에선', '에서', '것으로', '밝혀'
+            ]
+
+            words = text.split()
+            clean_words = [word for word in words if word not in stopwords and len(word) > 1]
+            final_text = " ".join(clean_words)
+
+            if final_text.strip():
+                try:
+                    font = 'malgun.ttf' if platform.system() == 'Windows' else '/System/Library/Fonts/Supplemental/AppleGothic.ttf'
+                    wc = WordCloud(
+                        font_path=font,
+                        background_color='white',
+                        width=500, height=500,
+                        max_words=60,
+                        colormap='Dark2'
+                    ).generate(final_text)
+
+                    fig3, ax3 = plt.subplots()
+                    ax3.imshow(wc, interpolation='bilinear')
+                    ax3.axis('off')
+                    st.pyplot(fig3)
+                except:
+                    st.write("시스템 폰트 로드 대기 중...")
+            else:
+                st.write("표출할 수 있는 핵심 키워드가 부족합니다.")
+
+
+def main():
+    st.set_page_config(page_title="해외 직구 여론 분석 마스터", layout="wide")
+    st.title("해외 직구 플랫폼 국내 언론 여론 분석 시스템")
+    st.markdown("본 프로그램은 직구 플랫폼의 **칭찬 기사(가격/혜택)**와 **비판 기사(품질/안전성)**를 엄격하게 교차 검증하여 분류합니다.")
+    st.markdown("---")
+
+    analyzer = UltimateNewsAnalyzer()
+    keyword = st.text_input("분석할 키워드를 입력하세요", "알리 테무")
+
+    if st.button("크롤링 및 정밀 여론 분석 시작"):
+        with st.spinner("최신 기사 데이터셋을 구축하고 매칭 로직을 연산 중입니다..."):
+            df = analyzer.fetch_rss_news(keyword)
+
+            if not df.empty:
+                df['감성점수'] = df.apply(analyzer.analyze_sentiment, axis=1)
+
+                df_display = df.copy()
+                df_display['날짜'] = df_display['날짜'].dt.strftime('%Y.%m.%d %H:%M')
+                df_display.to_csv('final_sentiment_data.csv', index=False, encoding='utf-8-sig')
+
+                st.success(f"데이터 정제 완료: 총 {len(df)}건의 유효 맥락 확보")
+
+                # 💡 데이터프레임 노출 컬럼에서 '요약문'을 완벽하게 들어내었습니다.
+                st.dataframe(df_display[['날짜', '제목', '언론사', '감성점수']], use_container_width=True)
+
+                analyzer.visualize_all(df)
+            else:
+                st.warning("수집된 데이터 피드가 존재하지 않습니다. 키워드를 변경해 보세요.")
+
+
+if __name__ == "__main__":
+    main()
