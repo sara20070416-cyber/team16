@@ -17,9 +17,4 @@ team16-중국계 직구 플랫폼에 대한 국내 언론의 여론 분석 프�
 브라우저 화면이 뜨면 상단의 검색 키워드 입력창에 분석하고 싶은 단어(예: 알리익스프레스 OR 테무)를 입력한 후 아래에 있는 '크롤링 시작' 버튼을 누른다. 버튼을 누르면 구글 뉴스 데이터 수집 및 감성 분석, 시각화가 진행된다. 분석 완료 후 뉴스 목록, 날짜별 기사 발행량 변화 그래프, 감성 비중 그래프, 워드클라우드가 출력된다. 결과 데이터는 crawled_data.csv 파일로 해당 폴더에 자동 저장된다.
 
 [사용라이브러리]
--streamlit
--pandas
--requests
--beautifulsoup4
--matplotlib
--wordcloud
+-streamlit,pandas, requests, beautifulsoup4, matplotlib, wordcloud
